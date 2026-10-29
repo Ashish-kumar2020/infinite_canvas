@@ -1,396 +1,612 @@
+import "./index.css";
 import { useCallback, useRef, useState } from "react";
-import type {
-  PointerEvent as ReactPointerEvent,
-  WheelEvent as ReactWheelEvent,
-} from "react";
+import type { PointerEvent, WheelEvent } from "react";
 import {
-  ArrowDownLeft,
-  ArrowUpLeft,
   Hand,
+  Layers,
+  Minus,
   MousePointer2,
   Plus,
-  RectangleHorizontal,
-  RotateCcw,
+  Square,
 } from "lucide-react";
 
-type Rect = { id: number; x: number; y: number; width: number; height: number };
-type Point = { x: number; y: number };
-type Mode = "select" | "pan" | "rect";
-type DragState =
-  | { kind: "pan"; pointer: Point; origin: Point }
-  | { kind: "move"; pointer: Point; origin: Point; rectId: number }
-  | { kind: "create"; pointer: Point; origin: Point; rectId: number };
+type Shape = {
+  id: string;
+  name: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  color: string;
+};
 
-const MIN_ZOOM = 0.2;
-const MAX_ZOOM = 3;
-const initialRects: Rect[] = [
-  { id: 1, x: 130, y: 115, width: 190, height: 120 },
-  { id: 2, x: 420, y: 270, width: 155, height: 100 },
+type Point = {
+  x: number;
+  y: number;
+};
+
+type Tool = "select" | "pan" | "rectangle";
+
+type DragState = {
+  id: string;
+  startX: number;
+  startY: number;
+  originalX: number;
+  originalY: number;
+};
+
+type ResizeState = DragState & {
+  handle: string;
+  originalWidth: number;
+  originalHeight: number;
+};
+
+const COLORS = ["#8B5CF6", "#3B82F6", "#10B981", "#F59E0B"];
+
+const initialShapes: Shape[] = [
+  {
+    id: "shape-1",
+    name: "Rectangle 1",
+    x: 120,
+    y: 100,
+    width: 180,
+    height: 120,
+    color: COLORS[0],
+  },
+  {
+    id: "shape-2",
+    name: "Rectangle 2",
+    x: 400,
+    y: 180,
+    width: 200,
+    height: 140,
+    color: COLORS[1],
+  },
 ];
+
+function createId() {
+  return `shape-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 export default function App() {
   const canvasRef = useRef<HTMLDivElement>(null);
-  const nextId = useRef(3);
-  const [rects, setRects] = useState<Rect[]>(initialRects);
-  const [selectedId, setSelectedId] = useState<number | null>(1);
-  const [mode, setMode] = useState<Mode>("select");
+  const shapesRef = useRef<Shape[]>(initialShapes);
+
+  const dragRef = useRef<DragState | null>(null);
+  const resizeRef = useRef<ResizeState | null>(null);
+
+  const panRef = useRef<{
+    startX: number;
+    startY: number;
+    originalX: number;
+    originalY: number;
+  } | null>(null);
+
+  const createRef = useRef<{
+    start: Point;
+    current: Point;
+  } | null>(null);
+
+  const [shapes, setShapes] = useState<Shape[]>(initialShapes);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [tool, setTool] = useState<Tool>("select");
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState<Point>({ x: 0, y: 0 });
-  const [drag, setDrag] = useState<DragState | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
-  const screenToWorld = useCallback(
-    (point: Point): Point => ({
-      x: (point.x - pan.x) / zoom,
-      y: (point.y - pan.y) / zoom,
-    }),
-    [pan, zoom],
+  const [preview, setPreview] = useState<{
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  } | null>(null);
+
+  const selectedShape =
+    shapes.find((shape) => shape.id === selectedId) ?? null;
+
+  const selectedShapeIndex = shapes.findIndex(
+    (shape) => shape.id === selectedId
   );
 
-  const getLocalPoint = (event: ReactPointerEvent | ReactWheelEvent): Point => {
-    const bounds = canvasRef.current!.getBoundingClientRect();
-    return { x: event.clientX - bounds.left, y: event.clientY - bounds.top };
-  };
+  const syncShapes = useCallback((nextShapes: Shape[]) => {
+    shapesRef.current = nextShapes;
+    setShapes(nextShapes);
+  }, []);
 
-  const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
-    const local = getLocalPoint(event);
-    const target = (event.target as HTMLElement).closest(
-      "[data-rect-id]",
-    ) as HTMLElement | null;
-    const targetId = target ? Number(target.dataset.rectId) : null;
+  const screenToWorld = useCallback((clientX: number, clientY: number): Point => {
+    const canvas = canvasRef.current;
+    if(!canvas) return {x: 0, y: 0};
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - pan.x) / zoom,
+      y: (clientY - rect.top - pan.y) / zoom
+    }
+  },[pan, zoom]);
+  
+  const addRectangle = useCallback(() => {
+    const newShape : Shape = {
+      id: createId(),
+      name: `Reactangle ${shapesRef.current.length + 1}`,
+      x: (100 - pan.x) / zoom,
+      y: (100 - pan.y) / zoom,
+      width: 100,
+      height: 120,
+      color: COLORS[shapesRef.current.length % COLORS.length],
+    };
 
-    if (mode === "pan" || event.button === 1) {
-      setDrag({ kind: "pan", pointer: local, origin: pan });
-      event.currentTarget.setPointerCapture(event.pointerId);
+    syncShapes([...shapesRef.current, newShape]);
+    setSelectedId(newShape.id);
+    setTool("select");
+  },[pan, zoom, syncShapes]);
+
+  const handleWheel = (event: WheelEvent<HTMLDivElement>) => {
+    if(!event.ctrlKey && !event.metaKey){
+      setPan((current) => ({
+        x: current.x - event.deltaX,
+        y: current.y - event.deltaY,
+      }));
       return;
     }
-    if (mode === "rect") {
-      const world = screenToWorld(local);
-      const id = nextId.current++;
-      setRects((current) => [
-        ...current,
-        { id, x: world.x, y: world.y, width: 1, height: 1 },
-      ]);
-      setSelectedId(id);
-      setDrag({ kind: "create", pointer: world, origin: world, rectId: id });
-      event.currentTarget.setPointerCapture(event.pointerId);
-      return;
-    }
-    if (targetId !== null) {
-      setSelectedId(targetId);
-      const world = screenToWorld(local);
-      const rect = rects.find((item) => item.id === targetId)!;
-      setDrag({
-        kind: "move",
-        pointer: world,
-        origin: { x: rect.x, y: rect.y },
-        rectId: targetId,
-      });
-      event.currentTarget.setPointerCapture(event.pointerId);
-    } else {
-      setSelectedId(null);
-    }
-  };
 
-  const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!drag) return;
-    const local = getLocalPoint(event);
-    if (drag.kind === "pan") {
-      setPan({
-        x: drag.origin.x + local.x - drag.pointer.x,
-        y: drag.origin.y + local.y - drag.pointer.y,
-      });
-      return;
-    }
-    const world = screenToWorld(local);
-    if (drag.kind === "move") {
-      const dx = world.x - drag.pointer.x;
-      const dy = world.y - drag.pointer.y;
-      setRects((current) =>
-        current.map((rect) =>
-          rect.id === drag.rectId
-            ? { ...rect, x: drag.origin.x + dx, y: drag.origin.y + dy }
-            : rect,
-        ),
-      );
-    } else {
-      const left = Math.min(drag.origin.x, world.x);
-      const top = Math.min(drag.origin.y, world.y);
-      setRects((current) =>
-        current.map((rect) =>
-          rect.id === drag.rectId
-            ? {
-                ...rect,
-                x: left,
-                y: top,
-                width: Math.max(1, Math.abs(world.x - drag.origin.x)),
-                height: Math.max(1, Math.abs(world.y - drag.origin.y)),
-              }
-            : rect,
-        ),
-      );
-    }
-  };
-
-  const stopDragging = () => setDrag(null);
-
-  const handleWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
     event.preventDefault();
-    const pointer = getLocalPoint(event);
-    const worldBeforeZoom = screenToWorld(pointer);
-    const factor = event.deltaY < 0 ? 1.1 : 1 / 1.1;
-    const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * factor));
-    setZoom(nextZoom);
-    setPan({
-      x: pointer.x - worldBeforeZoom.x * nextZoom,
-      y: pointer.y - worldBeforeZoom.y * nextZoom,
-    });
+    zoomAt(zoom * (event.deltaY < 0 ? 1.1 : 0.9), event.clientX , event.clientY)
+  }
+
+
+  const zoomAt = useCallback(
+    (nextZoom: number, clientX?: number, clientY?: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const rect = canvas.getBoundingClientRect();
+
+      const localX =
+        (clientX ?? rect.left + rect.width / 2) - rect.left;
+      const localY =
+        (clientY ?? rect.top + rect.height / 2) - rect.top;
+
+      const clampedZoom = Math.min(5.5, Math.max(0.25, nextZoom));
+
+      const worldX = (localX - pan.x) / zoom;
+      const worldY = (localY - pan.y) / zoom;
+
+      setZoom(clampedZoom);
+      setPan({
+        x: localX - worldX * clampedZoom,
+        y: localY - worldY * clampedZoom,
+      });
+    },
+    [pan, zoom]
+  );
+
+
+
+  const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
+    if (event.button === 2) {
+      event.preventDefault();
+      return;
+    }
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const world = screenToWorld(event.clientX, event.clientY);
+
+    if (event.button === 1 || tool === "pan") {
+      panRef.current = {
+        startX: event.clientX,
+        startY: event.clientY,
+        originalX: pan.x,
+        originalY: pan.y,
+      };
+
+      setIsDragging(true);
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    if (tool === "rectangle") {
+      createRef.current = { start: world, current: world };
+
+      setPreview({
+        x: world.x,
+        y: world.y,
+        width: 0,
+        height: 0,
+      });
+
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    const target = event.target as HTMLElement;
+    const shapeElement = target.closest<HTMLElement>("[data-shape-id]");
+
+    if (!shapeElement) {
+      setSelectedId(null);
+      return;
+    }
+
+    const id = shapeElement.dataset.shapeId;
+    if (!id) return;
+
+    const shape = shapesRef.current.find((item) => item.id === id);
+    if (!shape) return;
+
+    setSelectedId(id);
+
+    const handleElement = target.closest<HTMLElement>("[data-resize-handle]");
+    const handle = handleElement?.dataset.resizeHandle;
+
+    if (handle) {
+      resizeRef.current = {
+        id,
+        handle,
+        startX: world.x,
+        startY: world.y,
+        originalX: shape.x,
+        originalY: shape.y,
+        originalWidth: shape.width,
+        originalHeight: shape.height,
+      };
+
+      setIsDragging(true);
+      canvas.setPointerCapture(event.pointerId);
+      return;
+    }
+
+    dragRef.current = {
+      id,
+      startX: world.x,
+      startY: world.y,
+      originalX: shape.x,
+      originalY: shape.y,
+    };
+
+    setIsDragging(true);
+    canvas.setPointerCapture(event.pointerId);
   };
 
-  const zoomBy = (factor: number) => {
-    const element = canvasRef.current;
-    if (!element) return;
-    const center = { x: element.clientWidth / 2, y: element.clientHeight / 2 };
-    const world = screenToWorld(center);
-    const nextZoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom * factor));
-    setZoom(nextZoom);
-    setPan({
-      x: center.x - world.x * nextZoom,
-      y: center.y - world.y * nextZoom,
-    });
+  const handlePointerMove = (event: PointerEvent<HTMLDivElement>) => {
+    if (panRef.current) {
+      const drag = panRef.current;
+
+      setPan({
+        x: drag.originalX + event.clientX - drag.startX,
+        y: drag.originalY + event.clientY - drag.startY,
+      });
+      return;
+    }
+
+    if (createRef.current) {
+      const world = screenToWorld(event.clientX, event.clientY);
+      createRef.current.current = world;
+
+      const { start } = createRef.current;
+
+      setPreview({
+        x: Math.min(start.x, world.x),
+        y: Math.min(start.y, world.y),
+        width: Math.abs(world.x - start.x),
+        height: Math.abs(world.y - start.y),
+      });
+      return;
+    }
+
+    if (resizeRef.current) {
+      const world = screenToWorld(event.clientX, event.clientY);
+      const drag = resizeRef.current;
+      const dx = world.x - drag.startX;
+      const dy = world.y - drag.startY;
+
+      syncShapes(
+        shapesRef.current.map((shape) => {
+          if (shape.id !== drag.id) return shape;
+
+          let x = drag.originalX;
+          let y = drag.originalY;
+          let width = drag.originalWidth;
+          let height = drag.originalHeight;
+
+          if (drag.handle.includes("right")) width += dx;
+          if (drag.handle.includes("left")) {
+            x += dx;
+            width -= dx;
+          }
+          if (drag.handle.includes("bottom")) height += dy;
+          if (drag.handle.includes("top")) {
+            y += dy;
+            height -= dy;
+          }
+
+          return {
+            ...shape,
+            x,
+            y,
+            width: Math.max(20, width),
+            height: Math.max(20, height),
+          };
+        })
+      );
+      return;
+    }
+
+    if (dragRef.current) {
+      const world = screenToWorld(event.clientX, event.clientY);
+      const drag = dragRef.current;
+
+      syncShapes(
+        shapesRef.current.map((shape) =>
+          shape.id === drag.id
+            ? {
+                ...shape,
+                x: drag.originalX + world.x - drag.startX,
+                y: drag.originalY + world.y - drag.startY,
+              }
+            : shape
+        )
+      );
+    }
   };
 
-  const resetView = () => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  };
-  const addRectangle = () => setMode("rect");
+
+  const handlePointerUp = (event: PointerEvent<HTMLDivElement>) => {
+    if(createRef.current){
+      const {start, current} = createRef.current;
+      const width = Math.abs(current.x - start.x);
+      const height = Math.abs(current.y - start.y);
+
+      if(width > 5 && height > 5){
+        const shape : Shape = {
+          id: createId(),
+          name : `Reactangle ${shapesRef.current.length + 1}`,
+          x : Math.min(start.x, current.x),
+          y: Math.min(start.y, current.y),
+          width,
+          height,
+          color : COLORS[shapesRef.current.length % COLORS.length]
+        };
+        syncShapes([...shapesRef.current, shape]);
+        setSelectedId(shape.id);
+      }
+      createRef.current = null;
+      setPreview(null);
+    }
+    panRef.current = null;
+    dragRef.current = null;
+    resizeRef.current = null;
+    setIsDragging(false);
+    const canvas = canvasRef.current;
+    if(canvas?.hasPointerCapture(event.pointerId)){
+      canvas.releasePointerCapture(event.pointerId);
+    }
+  }
+
+
 
   return (
-    <main className="app-shell">
+    <div className="app">
       <header className="topbar">
-        <div className="brand-mark">∞</div>
-        <div className="brand-copy">
-          <strong>Infinite Canvas</strong>
-          <span>Ideas without boundaries</span>
-        </div>
-        <div className="topbar-spacer" />
-        <div className="status-pill">
-          <span className="status-dot" /> Local workspace
+        <div className="brand">
+          <div className="brand-icon">
+            <Layers size={20} />
+          </div>
+          <div>
+            <h1>Infinite Canvas</h1>
+            <span>Design workspace</span>
+          </div>
         </div>
       </header>
 
       <div className="workspace">
-        <aside className="toolbar">
-          <div className="toolbar-label">TOOLS</div>
+        <aside className="left-sidebar">
+          <div className="sidebar-heading">TOOLS</div>
+
           <button
-            className={`tool-button ${mode === "select" ? "active" : ""}`}
-            onClick={() => setMode("select")}
-            title="Select and move"
+            className={`tool-button ${tool === "select" ? "active" : ""}`}
+            onClick={() => setTool("select")}
+            title="Select (V)"
           >
             <MousePointer2 size={19} />
             <span>Select</span>
             <kbd>V</kbd>
           </button>
+
           <button
-            className={`tool-button ${mode === "pan" ? "active" : ""}`}
-            onClick={() => setMode("pan")}
-            title="Pan canvas"
+            className={`tool-button ${tool === "pan" ? "active" : ""}`}
+            onClick={() => setTool("pan")}
+            title="Pan (H)"
           >
             <Hand size={19} />
-            <span>Pan canvas</span>
+            <span>Pan</span>
             <kbd>H</kbd>
           </button>
+
           <button
-            className={`tool-button ${mode === "rect" ? "active" : ""}`}
-            onClick={addRectangle}
-            title="Create rectangle"
+            className={`tool-button ${tool === "rectangle" ? "active" : ""}`}
+            onClick={() => setTool("rectangle")}
+            title="Rectangle (R)"
           >
-            <RectangleHorizontal size={19} />
+            <Square size={19} />
             <span>Rectangle</span>
             <kbd>R</kbd>
           </button>
-          <div className="toolbar-divider" />
-          <div className="toolbar-tip">
-            <span className="tip-icon">✦</span>
-            <p>
-              <b>Quick tip</b>Drag empty space to pan, or use the mouse wheel to
-              zoom.
-            </p>
-          </div>
+
+          <div className="sidebar-divider" />
         </aside>
 
-        <section className="canvas-column">
-          <div className="canvas-heading">
-            <div>
-              <h1>Untitled board</h1>
-              <p>A spacious place to think visually</p>
+        <main className="canvas-area">
+          <div className="canvas-toolbar">
+            <div className="canvas-breadcrumb">
+              <span>Workspace</span>
+              <span className="breadcrumb-separator">/</span>
+              <strong>Untitled canvas</strong>
             </div>
-            <div className="board-badge">{rects.length} objects</div>
+
+            <div className="canvas-controls">
+              <span className="zoom-label">{Math.round(zoom * 100)}%</span>
+
+              <button
+                className="small-icon-button"
+                title="Zoom out"
+                onClick={() => zoomAt(zoom - 0.1)}
+              >
+                <Minus size={15} />
+              </button>
+
+              <button
+                className="small-icon-button"
+                title="Zoom in"
+                onClick={() => zoomAt(zoom + 0.1)}
+              >
+                <Plus size={15} />
+              </button>
+
+              <button
+                className="fit-button"
+                onClick={() => {
+                  setZoom(1);
+                  setPan({ x: 0, y: 0 });
+                }}
+              >
+                Reset view
+              </button>
+            </div>
           </div>
+
           <div
             ref={canvasRef}
-            className={`canvas-viewport ${mode === "pan" || drag?.kind === "pan" ? "panning" : ""} ${mode === "rect" ? "drawing" : ""}`}
+            className={`canvas ${tool === "pan" || isDragging ? "grabbing" : ""}`}
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
-            onPointerUp={stopDragging}
-            onPointerCancel={stopDragging}
+            onPointerUp={handlePointerUp}
+            onPointerCancel={handlePointerUp}
             onWheel={handleWheel}
+            onContextMenu={(event) => event.preventDefault()}
+            style={{
+              backgroundPosition: `${pan.x}px ${pan.y}px`,
+              backgroundSize: `${24 * zoom}px ${24 * zoom}px`,
+              cursor:
+                tool === "pan"
+                  ? isDragging
+                    ? "grabbing"
+                    : "grab"
+                  : tool === "rectangle"
+                    ? "crosshair"
+                    : "default",
+            }}
           >
             <div
-              className="canvas-world"
+              className="canvas-content"
               style={{
                 transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+                transformOrigin: "0 0",
               }}
             >
-              <svg
-                className="grid-layer"
-                width="10000"
-                height="10000"
-                viewBox="0 0 10000 10000"
-                aria-hidden="true"
-              >
-                <defs>
-                  <pattern
-                    id="small-grid"
-                    width="24"
-                    height="24"
-                    patternUnits="userSpaceOnUse"
-                  >
-                    <path
-                      d="M 24 0 L 0 0 0 24"
-                      fill="none"
-                      stroke="#dce3f0"
-                      strokeWidth="1"
-                    />
-                  </pattern>
-                  <pattern
-                    id="large-grid"
-                    width="120"
-                    height="120"
-                    patternUnits="userSpaceOnUse"
-                  >
-                    <rect width="120" height="120" fill="url(#small-grid)" />
-                    <path
-                      d="M 120 0 L 0 0 0 120"
-                      fill="none"
-                      stroke="#cbd5e5"
-                      strokeWidth="1.2"
-                    />
-                  </pattern>
-                </defs>
-                <rect width="10000" height="10000" fill="url(#large-grid)" />
-              </svg>
-              {rects.map((rect) => (
+              {shapes.map((shape) => (
                 <div
-                  key={rect.id}
-                  data-rect-id={rect.id}
-                  className={`canvas-rect ${selectedId === rect.id ? "selected" : ""}`}
+                  key={shape.id}
+                  data-shape-id={shape.id}
+                  className={`canvas-shape ${selectedId === shape.id ? "selected" : ""}`}
                   style={{
-                    left: rect.x,
-                    top: rect.y,
-                    width: rect.width,
-                    height: rect.height,
+                    left: shape.x,
+                    top: shape.y,
+                    width: shape.width,
+                    height: shape.height,
+                    backgroundColor: shape.color,
                   }}
                 >
-                  <span className="rect-label">Rectangle {rect.id}</span>
-                  {selectedId === rect.id && (
+                  {selectedId === shape.id && (
                     <>
-                      <i className="selection-corner top-left" />
-                      <i className="selection-corner top-right" />
-                      <i className="selection-corner bottom-left" />
-                      <i className="selection-corner bottom-right" />
+                      <div className="selection-label">{shape.name}</div>
+                      <div className="resize-handle top-left" data-resize-handle="top-left" />
+                      <div className="resize-handle top-right" data-resize-handle="top-right" />
+                      <div className="resize-handle bottom-left" data-resize-handle="bottom-left" />
+                      <div className="resize-handle bottom-right" data-resize-handle="bottom-right" />
                     </>
                   )}
                 </div>
               ))}
+
+              {preview && (
+                <div
+                  className="creation-preview"
+                  style={{
+                    left: preview.x,
+                    top: preview.y,
+                    width: preview.width,
+                    height: preview.height,
+                  }}
+                />
+              )}
             </div>
-            {rects.length === 0 && (
-              <div className="empty-hint">
+
+            {shapes.length === 0 && !preview && (
+              <div className="empty-canvas">
                 <div className="empty-icon">
-                  <Plus size={22} />
+                  <Square size={28} />
                 </div>
-                <b>Your canvas is ready</b>
-                <span>Choose Rectangle to add your first shape.</span>
+                <h2>Your canvas is empty</h2>
+                <p>Add a rectangle to get started.</p>
+                <button className="primary-button" onClick={addRectangle}>
+                  <Plus size={16} />
+                  Add rectangle
+                </button>
               </div>
             )}
-            <div className="canvas-coordinates">
-              X {Math.round(-pan.x / zoom)} · Y {Math.round(-pan.y / zoom)}
-            </div>
-            <div className="zoom-controls">
-              <button onClick={() => zoomBy(1 / 1.2)} aria-label="Zoom out">
-                <ArrowDownLeft size={16} />
-              </button>
-              <span>{Math.round(zoom * 100)}%</span>
-              <button onClick={() => zoomBy(1.2)} aria-label="Zoom in">
-                <ArrowUpLeft size={16} />
-              </button>
-              <i />
-              <button onClick={resetView} aria-label="Reset view">
-                <RotateCcw size={15} />
-              </button>
-            </div>
           </div>
-          <div className="canvas-footer">
-            <span>
-              <span className="footer-dot" /> All changes stay in this browser
-              session
-            </span>
-            <span>World space · {Math.round(zoom * 100)}% zoom</span>
-          </div>
-        </section>
 
-        <aside className="layers-panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Layers</h2>
-              <p>Objects on this board</p>
+          <footer className="statusbar">
+            <div className="status-right">
+              <span>{shapes.length} objects</span>
+              <span className="status-divider">|</span>
+              <span>{selectedShape?.name ?? "Nothing selected"}</span>
             </div>
-            <span className="layer-count">{rects.length}</span>
+          </footer>
+        </main>
+
+        <aside className="right-sidebar">
+          <div className="layers-section">
+            <div className="layers-heading">
+              <div>
+                <Layers size={16} />
+                <h3>Layers</h3>
+              </div>
+              <span>{shapes.length}</span>
+            </div>
+
+            <div className="layers-list">
+              {shapes.length === 0 ? (
+                <p className="empty-layers">No objects yet</p>
+              ) : (
+                [...shapes].reverse().map((shape) => (
+                  <button
+                    key={shape.id}
+                    className={`layer-item ${selectedId === shape.id ? "layer-active" : ""}`}
+                    onClick={() => setSelectedId(shape.id)}
+                  >
+                    <span
+                      className="layer-color"
+                      style={{ backgroundColor: shape.color }}
+                    />
+                    <span className="layer-name">{shape.name}</span>
+                    {selectedId === shape.id && <MousePointer2 size={14} />}
+                  </button>
+                ))
+              )}
+            </div>
           </div>
-          <button className="add-object-button" onClick={addRectangle}>
-            <Plus size={17} /> Add rectangle
-          </button>
-          <div className="layers-list">
-            {[...rects].reverse().map((rect) => (
-              <button
-                key={rect.id}
-                className={`layer-row ${selectedId === rect.id ? "selected" : ""}`}
-                onClick={() => {
-                  setSelectedId(rect.id);
-                  setMode("select");
-                }}
-              >
-                <span className="layer-shape-icon" />
-                <span className="layer-name">Rectangle {rect.id}</span>
-                <span className="layer-size">
-                  {Math.round(rect.width)}×{Math.round(rect.height)}
-                </span>
-              </button>
-            ))}
-            {rects.length === 0 && (
-              <p className="no-layers">
-                No objects yet. Add a rectangle to get started.
-              </p>
-            )}
-          </div>
-          <div className="panel-note">
-            <div className="note-mark">i</div>
-            <p>
-              <b>Simple by design</b>
-              <br />
-              Select a layer to focus its shape. Drag a shape to move it around
-              the canvas.
-            </p>
-          </div>
+
+          {selectedShape && (
+            <div className="selection-footer">
+              <span>Selected layer</span>
+              <span>
+                {selectedShapeIndex + 1} of {shapes.length}
+              </span>
+            </div>
+          )}
         </aside>
       </div>
-      <footer className="app-footer">
-        <span>
-          INFINITE CANVAS <span className="footer-separator">/</span> PROTOTYPE
-        </span>
-        <span>Built for focused thinking</span>
-      </footer>
-    </main>
+    </div>
   );
 }

@@ -1,0 +1,6 @@
+Limitations
+
+1- Minimum Reactangle Size and its width and height should not be less than 5 units
+2 - Resize Constraints
+3- No Touch Gesture is available.
+4 - We set the zoom limit to 5.5 - 550% and minimum is of 0.25 - 25%
