@@ -1,7 +1,0 @@
-Validation
-1- Reactangle Creation is working fine at different zoom levels and in all the directions
-2- Rectangle selection is also working fine and it is showing us the name of the rectangle on top left corner of the selected rectangle
-3 - Panning is also working fine and we are able to move around the canvas
-4 - Zoom is also working fine in and out zoom is working as expected.
-5- Coordination accuracy is also fine we have checked this at multiple zoom levels.
-6- Dragging is working as expected.
